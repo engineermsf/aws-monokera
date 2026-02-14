@@ -36,11 +36,18 @@ jobs:
         # Alternativa con access key: usar aws-access-key-id y aws-secret-access-key en secrets
 
       - name: Update Lambda configuration
+        env:
+          # Probar secret primero; si no existe, usar variable (nombre exacto: LAYER_ARN)
+          LAYER_ARN: ${{ secrets.LAYER_ARN || vars.LAYER_ARN }}
         run: |
+          if [ -z "$LAYER_ARN" ]; then
+            echo "::error::LAYER_ARN vacío. Crea un secret o variable en Settings -> Secrets and variables -> Actions, nombre exacto: LAYER_ARN"
+            exit 1
+          fi
           aws lambda update-function-configuration \
             --function-name ${{ secrets.LAMBDA_EXTRACCION_NAME }} \
             --environment "Variables={BRONZE_OUTPUT_PATH=s3://bnc-lkh-dev-bronze/spaceflight,EXTRACCION_MAX_ITEMS=1}" \
-            --layers "${{ vars.LAYER_ARN }}"
+            --layers "$LAYER_ARN"
 
       - name: Deploy to Lambda
         run: |
