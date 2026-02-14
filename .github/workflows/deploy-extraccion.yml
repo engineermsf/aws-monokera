@@ -7,6 +7,7 @@ on:
     branches: [feature/develop]
     paths:
       - "parte2/21_extraccion/**"
+      - ".github/workflows/deploy-extraccion.yml"
   workflow_dispatch:
 
 jobs:
@@ -29,8 +30,8 @@ jobs:
           cp -r parte2/21_extraccion/extraction "$BUILD_DIR/"
           cp parte2/21_extraccion/lambda/handler.py "$BUILD_DIR/"
           pip install -r parte2/21_extraccion/lambda/requirements.txt -t "$BUILD_DIR/" --quiet
-          cd "$BUILD_DIR" && zip -r lambda.zip . -x "*.pyc" -x "__pycache__/*" -x "*__pycache__*"
-          mv "$BUILD_DIR/lambda.zip" "$GITHUB_WORKSPACE/lambda.zip"
+          (cd "$BUILD_DIR" && zip -r lambda.zip . -x "*.pyc" -x "__pycache__/*" -x "*__pycache__*")
+          mv "$BUILD_DIR/lambda.zip" ./lambda.zip
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
