@@ -25,7 +25,7 @@ Punto de entrada de la Lambda. Obtiene `output_path` del evento o de la variable
 
 ## Estilo del código: funciones vs P.O.O.
 
-El código está escrito con **funciones** y módulos, sin clases. Para este alcance (un solo flujo de extracción, una API, un tipo de escritura Parquet) es suficiente y fácil de seguir y testear.
+El código está escrito con **funciones** y módulos, sin clases. Para este alcance (un solo flujo de extracción, una API, un tipo de escritura Parquet) es suficiente y fácil de seguir y testear
 
 **P.O.O.** tendría sentido si aparecieran, por ejemplo: varios clientes de API con la misma interfaz, varios destinos de escritura (S3, local, otro almacén), o mucha configuración y estado compartido. Ahí se podría tener una clase `SpaceflightAPIClient`, otra `BronzeParquetWriter`, y una `ExtractionPipeline` que las use. Añadiendo capas y archivos; para un pipeline pequeño suele ser más claro mantener funciones y parámetros.
 
