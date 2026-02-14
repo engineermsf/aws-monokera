@@ -1,7 +1,7 @@
 import logging
 import requests
 
-from extraction.api_client import fetch_articles, fetch_blogs, fetch_reports
+from extraction.api_client import fetch_articles, fetch_blogs, fetch_reports, fetch_info
 from extraction.parquet_writer import write_bronze_parquet
 
 logger = logging.getLogger(__name__)
@@ -22,9 +22,10 @@ def _dedup_by_content_type_id(records):
 
 def run(output_path, session=None, base_url=None):
     """
-    Extrae articles, blogs y reports de la API, deduplica por (content_type, id)
+    Extrae articles, blogs, reports e info de la API, deduplica por (content_type, id)
     y escribe Parquet en output_path (directorio local o s3://bucket/prefix).
     Si EXTRACCION_MAX_ITEMS está definido (ej. 1), se extrae hasta N ítems de cada tipo (articles, blogs, reports).
+    Info es un único registro por ejecución (versión de la API y news_sites).
     """
     if session is None:
         session = requests.Session()
@@ -43,6 +44,17 @@ def run(output_path, session=None, base_url=None):
         items, total = fetch_fn(session, base_url, max_items=MAX_ITEMS_PER_TYPE)
         all_items.extend(items)
         logger.info("%s: %s ítems (total en API: %s)", name, len(items), total)
+
+    logger.info("Extrayendo info...")
+    info_data = fetch_info(session, base_url)
+    info_record = {
+        "content_type": "info",
+        "id": 0,
+        "version": info_data.get("version"),
+        "news_sites": str(info_data.get("news_sites", [])),
+    }
+    all_items.append(info_record)
+    logger.info("info: 1 registro (versión %s)", info_record.get("version"))
 
     logger.info("Total antes de dedup: %s", len(all_items))
     unique = _dedup_by_content_type_id(all_items)

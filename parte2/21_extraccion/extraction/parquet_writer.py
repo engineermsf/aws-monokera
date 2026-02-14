@@ -19,6 +19,8 @@ def _prepare_columns(records):
             row["launches"] = str(row["launches"])
         if "events" in row and isinstance(row["events"], list):
             row["events"] = str(row["events"])
+        if "news_sites" in row and isinstance(row["news_sites"], list):
+            row["news_sites"] = str(row["news_sites"])
         out.append(row)
     return out
 
