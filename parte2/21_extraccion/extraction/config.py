@@ -1,7 +1,7 @@
 import os
 
 BASE_URL = "https://api.spaceflightnewsapi.net/v4"
-ENDPOINTS = ("articles", "blogs", "reports")
+ENDPOINTS = ("articles", "blogs", "reports", "info")
 PAGE_SIZE = 100
 MAX_RETRIES = 3
 RETRY_BACKOFF_SEC = 2
@@ -15,4 +15,5 @@ CONTENT_TYPE_BY_ENDPOINT = {
     "articles": "article",
     "blogs": "blog",
     "reports": "report",
+    "info": "info",
 }
