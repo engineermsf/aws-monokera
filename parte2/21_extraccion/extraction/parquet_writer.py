@@ -45,19 +45,20 @@ def write_bronze_parquet(records, base_path, ingestion_date=None):
     table = table.append_column("day", pa.array([day] * len(records)))
 
     if base_path.startswith("s3://"):
-        import boto3
         from pyarrow import fs
 
-        path_clean = base_path.rstrip("/")
-        bucket = path_clean.replace("s3://", "").split("/")[0]
-        prefix = "/".join(path_clean.replace("s3://", "").split("/")[1:])
-        s3 = boto3.client("s3")
-        region = s3.meta.region_name or "us-east-1"
+        path_clean = base_path.rstrip("/").replace("s3://", "")
+        parts = path_clean.split("/", 1)
+        bucket = parts[0]
+        prefix = parts[1] if len(parts) > 1 else ""
+        # PyArrow S3FileSystem espera root_path como "bucket/key", no URI s3://
+        root_path = f"{bucket}/{prefix}" if prefix else bucket
+        import os
+        region = os.environ.get("AWS_REGION", "us-east-1")
         fs_s3 = fs.S3FileSystem(region=region)
-        full_base = f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
         pq.write_to_dataset(
             table,
-            root_path=full_base,
+            root_path=root_path,
             partition_cols=["content_type", "year", "month", "day"],
             existing_data_behavior="overwrite_or_ignore",
             filesystem=fs_s3,
