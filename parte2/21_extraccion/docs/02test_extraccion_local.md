@@ -45,9 +45,9 @@ PYTHONPATH=. python -c "from extraction.run import run; run('/tmp/bronze_test')"
 
 Los archivos quedan bajo `/tmp/bronze_test/` con particiones `content_type`, year, month, day.
 
-## Límite para pruebas (1 documento)
+## Límite para pruebas (por tipo)
 
-Para probar rápido (local o en Lambda) puedes limitar cuántos ítems se extraen con la variable de entorno **`EXTRACCION_MAX_ITEMS`** (ej. `1`).
+Con la variable **`EXTRACCION_MAX_ITEMS`** (ej. `1` o `2`) se extrae hasta N ítems **de cada tipo** (articles, blogs, reports). Ej.: `1` → 1 article + 1 blog + 1 report.
 
 En local:
 
@@ -55,4 +55,4 @@ En local:
 EXTRACCION_MAX_ITEMS=1 PYTHONPATH=. python -c "from extraction.run import run; run('/tmp/bronze_test')"
 ```
 
-En Lambda está configurado `EXTRACCION_MAX_ITEMS=1` para las pruebas; al pasar a producción quita esa variable (o ponla vacía) en la configuración de la función.
+En Lambda está configurado `EXTRACCION_MAX_ITEMS=1` para las pruebas (1 de cada tipo). Para producción, quita la variable o ponla vacía.

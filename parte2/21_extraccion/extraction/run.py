@@ -24,29 +24,24 @@ def run(output_path, session=None, base_url=None):
     """
     Extrae articles, blogs y reports de la API, deduplica por (content_type, id)
     y escribe Parquet en output_path (directorio local o s3://bucket/prefix).
-    Si EXTRACCION_MAX_ITEMS está definido (ej. 1 para pruebas), se limita el total de ítems.
+    Si EXTRACCION_MAX_ITEMS está definido (ej. 1), se extrae hasta N ítems de cada tipo (articles, blogs, reports).
     """
     if session is None:
         session = requests.Session()
     if base_url is None:
         from extraction.config import BASE_URL
         base_url = BASE_URL
-    from extraction.config import MAX_ITEMS_TOTAL
+    from extraction.config import MAX_ITEMS_PER_TYPE
 
     all_items = []
-    remaining = MAX_ITEMS_TOTAL
     for name, fetch_fn in (
         ("articles", fetch_articles),
         ("blogs", fetch_blogs),
         ("reports", fetch_reports),
     ):
-        if remaining is not None and remaining <= 0:
-            break
         logger.info("Extrayendo %s...", name)
-        items, total = fetch_fn(session, base_url, max_items=remaining)
+        items, total = fetch_fn(session, base_url, max_items=MAX_ITEMS_PER_TYPE)
         all_items.extend(items)
-        if remaining is not None:
-            remaining -= len(items)
         logger.info("%s: %s ítems (total en API: %s)", name, len(items), total)
 
     logger.info("Total antes de dedup: %s", len(all_items))
