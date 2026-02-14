@@ -44,7 +44,8 @@ jobs:
         run: |
           aws lambda update-function-configuration \
             --function-name ${{ secrets.LAMBDA_EXTRACCION_NAME }} \
-            --environment "Variables={BRONZE_OUTPUT_PATH=s3://bnc-lkh-dev-bronze/spaceflight,EXTRACCION_MAX_ITEMS=1}"
+            --environment "Variables={BRONZE_OUTPUT_PATH=s3://bnc-lkh-dev-bronze/spaceflight,EXTRACCION_MAX_ITEMS=1}" \
+            --layers "[]"
 
       - name: Deploy to Lambda
         run: |
