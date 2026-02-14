@@ -1,3 +1,7 @@
+# Config local (no subir a repo)
+localconfig/
+.cursor/
+
 # Entorno y secrets
 .env
 .env.*
