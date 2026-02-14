@@ -42,6 +42,10 @@ jobs:
             --function-name ${{ secrets.LAMBDA_EXTRACCION_NAME }} \
             --zip-file fileb://lambda.zip
 
+      - name: Wait for Lambda update
+        run: |
+          aws lambda wait function-updated --function-name ${{ secrets.LAMBDA_EXTRACCION_NAME }}
+
       - name: Update Lambda configuration
         env:
           LAYER_ARN: ${{ secrets.LAYER_ARN || vars.LAYER_ARN }}
