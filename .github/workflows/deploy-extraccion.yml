@@ -19,17 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
+      # Zip solo código; las deps (pyarrow, requests) vienen de la layer (variable LAYER_ARN).
       - name: Build package
         run: |
           BUILD_DIR=$(mktemp -d)
           cp -r parte2/21_extraccion/extraction "$BUILD_DIR/"
           cp parte2/21_extraccion/lambda/handler.py "$BUILD_DIR/"
-          pip install -r parte2/21_extraccion/lambda/requirements.txt -t "$BUILD_DIR/" --quiet
           (cd "$BUILD_DIR" && zip -r lambda.zip . -x "*.pyc" -x "__pycache__/*" -x "*__pycache__*")
           cp "$BUILD_DIR/lambda.zip" "$GITHUB_WORKSPACE/lambda.zip"
 
@@ -45,7 +40,7 @@ jobs:
           aws lambda update-function-configuration \
             --function-name ${{ secrets.LAMBDA_EXTRACCION_NAME }} \
             --environment "Variables={BRONZE_OUTPUT_PATH=s3://bnc-lkh-dev-bronze/spaceflight,EXTRACCION_MAX_ITEMS=1}" \
-            --layers "[]"
+            --layers "${{ vars.LAYER_ARN }}"
 
       - name: Deploy to Lambda
         run: |
