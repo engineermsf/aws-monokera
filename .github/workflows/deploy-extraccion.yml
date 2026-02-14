@@ -35,9 +35,15 @@ jobs:
           aws-region: us-east-1
         # Alternativa con access key: usar aws-access-key-id y aws-secret-access-key en secrets
 
+      # Primero subir código ligero; luego config+layer (código+layer no pueden superar 250 MB).
+      - name: Deploy to Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name ${{ secrets.LAMBDA_EXTRACCION_NAME }} \
+            --zip-file fileb://lambda.zip
+
       - name: Update Lambda configuration
         env:
-          # Probar secret primero; si no existe, usar variable (nombre exacto: LAYER_ARN)
           LAYER_ARN: ${{ secrets.LAYER_ARN || vars.LAYER_ARN }}
         run: |
           if [ -z "$LAYER_ARN" ]; then
@@ -48,9 +54,3 @@ jobs:
             --function-name ${{ secrets.LAMBDA_EXTRACCION_NAME }} \
             --environment "Variables={BRONZE_OUTPUT_PATH=s3://bnc-lkh-dev-bronze/spaceflight,EXTRACCION_MAX_ITEMS=1}" \
             --layers "$LAYER_ARN"
-
-      - name: Deploy to Lambda
-        run: |
-          aws lambda update-function-code \
-            --function-name ${{ secrets.LAMBDA_EXTRACCION_NAME }} \
-            --zip-file fileb://lambda.zip
