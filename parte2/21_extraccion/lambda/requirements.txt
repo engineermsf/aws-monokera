@@ -1,0 +1,4 @@
+# Dependencias solo para Lambda (empaquetadas en el deploy).
+# boto3 no se incluye: ya viene en el runtime de Lambda.
+requests
+pyarrow
