@@ -47,14 +47,17 @@ def run(output_path, session=None, base_url=None):
 
     logger.info("Extrayendo info...")
     info_data = fetch_info(session, base_url)
+    version = info_data.get("version") if isinstance(info_data, dict) else None
+    news_sites_raw = info_data.get("news_sites", []) if isinstance(info_data, dict) else []
+    news_sites_str = str(news_sites_raw) if isinstance(news_sites_raw, list) else str(news_sites_raw)
     info_record = {
         "content_type": "info",
         "id": 0,
-        "version": info_data.get("version"),
-        "news_sites": str(info_data.get("news_sites", [])),
+        "version": version,
+        "news_sites": news_sites_str,
     }
     all_items.append(info_record)
-    logger.info("info: 1 registro (versión %s)", info_record.get("version"))
+    logger.info("info: 1 registro → version=%s, news_sites=%s", version, news_sites_str[:80] + "..." if len(news_sites_str) > 80 else news_sites_str)
 
     logger.info("Total antes de dedup: %s", len(all_items))
     unique = _dedup_by_content_type_id(all_items)
