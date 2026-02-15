@@ -36,7 +36,8 @@ def parse_args():
     p.add_argument("--bronze_path", required=True, help="Ruta base Bronze (Parquet), ej. s3://bucket/bronze/spaceflight o file:///tmp/bronze")
     p.add_argument("--silver_warehouse", required=True, help="Warehouse Iceberg para Silver, ej. s3://bucket/silver o file:///tmp/silver_warehouse")
     p.add_argument("--partition_date", required=True, help="Fecha de partición de ingesta YYYY-MM-DD")
-    return p.parse_args()
+    # parse_known_args para ignorar argumentos que Glue inyecta (--JOB_ID, --JOB_RUN_ID, --JOB_NAME)
+    return p.parse_known_args()[0]
 
 
 def parse_partition_date(s):
@@ -46,26 +47,19 @@ def parse_partition_date(s):
 
 
 def read_bronze(spark, bronze_path, year, month, day):
-    """Lee Bronze filtrando por partición de ingesta."""
+    """Lee Bronze solo para la partición de ingesta (evita leer otras fechas).
+    basePath hace que Spark infiera columnas de partición (content_type, year, month, day)."""
     path = bronze_path.rstrip("/")
-    df = spark.read.parquet(path)
-    if "year" in df.columns and "month" in df.columns and "day" in df.columns:
-        df = df.filter(
-            (F.col("year") == year) & (F.col("month") == month) & (F.col("day") == day)
-        )
-    return df
+    partition_path = f"{path}/*/year={year}/month={month}/day={day}"
+    return spark.read.option("basePath", path).parquet(partition_path)
 
 
 def read_bronze_info_only(spark, bronze_path, year, month, day):
-    """Lee solo la partición content_type=info para evitar que el esquema unificado pierda version/news_sites."""
+    """Lee solo la partición content_type=info para la fecha de ingesta.
+    basePath hace que Spark infiera content_type, year, month, day."""
     path = bronze_path.rstrip("/")
-    info_path = f"{path}/content_type=info"
-    df = spark.read.parquet(info_path)
-    if "year" in df.columns and "month" in df.columns and "day" in df.columns:
-        df = df.filter(
-            (F.col("year") == year) & (F.col("month") == month) & (F.col("day") == day)
-        )
-    return df
+    info_partition_path = f"{path}/content_type=info/year={year}/month={month}/day={day}"
+    return spark.read.option("basePath", path).parquet(info_partition_path)
 
 
 def deduplicate_by_content_type_id(df):
@@ -185,6 +179,8 @@ def main():
         info_df = info_df.withColumn("news_site", F.explode(sites_expr)).drop("news_sites")
         info_cols = ["id", "content_type", "version", "news_site", "year", "month", "day"]
         info_df = info_df.select(info_cols)
+        # MERGE exige una sola fila por clave: deduplicar por (news_site, year, month, day)
+        info_df = info_df.dropDuplicates(["news_site", "year", "month", "day"])
         write_silver_merge(
             spark, INFO_TABLE, info_df, partition_cols,
             merge_on=["news_site", "year", "month", "day"],
@@ -195,4 +191,7 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    if code != 0:
+        sys.exit(code)
+    # Éxito: no usar sys.exit(0), Glue/Spark a veces lo interpreta como fallo

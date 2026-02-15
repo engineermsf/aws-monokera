@@ -42,7 +42,8 @@ def parse_args():
         default=None,
         help="Fecha de negocio YYYY-MM-DD (partición Silver = published_at): lee solo esa partición y hace MERGE. Debe ser la fecha de corte del pipeline. Sin él, lee todo Silver y mergea.",
     )
-    return p.parse_args()
+    # parse_known_args para ignorar argumentos que Glue inyecta (--JOB_ID, --JOB_RUN_ID, --JOB_NAME)
+    return p.parse_known_args()[0]
 
 
 def parse_partition_date(s):
@@ -286,4 +287,7 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    if code != 0:
+        sys.exit(code)
+    # Éxito: no usar sys.exit(0), Glue/Spark a veces lo interpreta como fallo
