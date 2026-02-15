@@ -22,13 +22,16 @@ def _dedup_by_content_type_id(records):
     return out
 
 
-def run(output_path, session=None, base_url=None, ingestion_date=None, max_items_per_type=None):
+_USE_ENV_LIMIT = object()
+
+
+def run(output_path, session=None, base_url=None, ingestion_date=None, max_items_per_type=_USE_ENV_LIMIT):
     """
     Extrae articles, blogs, reports e info de la API, deduplica por (content_type, id)
     y escribe Parquet en output_path (directorio local o s3://bucket/prefix).
     ingestion_date: datetime, date o str 'YYYY-MM-DD' para la partición; si None, usa utcnow().
-    max_items_per_type: límite por tipo (articles, blogs, reports); None = sin límite.
-        Si no se pasa, se usa EXTRACCION_MAX_ITEMS de entorno.
+    max_items_per_type: límite por tipo (articles, blogs, reports). None = sin límite.
+        Solo si no se pasa el argumento se usa EXTRACCION_MAX_ITEMS de entorno; si se pasa None (ej. Lambda con "all"), sin límite.
     """
     if session is None:
         session = requests.Session()
@@ -36,7 +39,7 @@ def run(output_path, session=None, base_url=None, ingestion_date=None, max_items
         from extraction.config import BASE_URL
         base_url = BASE_URL
     from extraction.config import MAX_ITEMS_PER_TYPE
-    limit = max_items_per_type if max_items_per_type is not None else MAX_ITEMS_PER_TYPE
+    limit = MAX_ITEMS_PER_TYPE if max_items_per_type is _USE_ENV_LIMIT else max_items_per_type
 
     all_items = []
     for name, fetch_fn in (
