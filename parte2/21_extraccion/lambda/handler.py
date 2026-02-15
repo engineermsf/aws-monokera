@@ -22,9 +22,11 @@ def _parse_max_items(value):
 def lambda_handler(event, context):
     output_path = event.get("output_path") or os.environ.get("BRONZE_OUTPUT_PATH", "/tmp/bronze")
     ingestion_date = event.get("ingestion_date")
-    # Límite por tipo: primero evento (p. ej. desde Airflow), luego variable de entorno
-    max_items = _parse_max_items(event.get("extraction_max_items"))
-    if max_items is None:
+    # Límite por tipo: si el evento trae valor (all, 1, etc.) se usa ese; si no, la variable de entorno
+    event_val = event.get("extraction_max_items")
+    if event_val is None or (isinstance(event_val, str) and event_val.strip() == ""):
         max_items = _parse_max_items(os.environ.get("EXTRACCION_MAX_ITEMS"))
+    else:
+        max_items = _parse_max_items(event_val)
     result = run(output_path, ingestion_date=ingestion_date, max_items_per_type=max_items)
     return {"statusCode": 200, "body": result}
