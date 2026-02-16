@@ -16,6 +16,6 @@
 
 ---
 
-## 2. Resumen en una frase
+## Resumen
 
 **Se entrega:** Dos DAGs (local y AWS) que orquestan extracción (Lambda), limpieza/dedup (Silver) y análisis/carga (Gold), con documentación que mapea los requisitos de la prueba y lista los entregables cerrados.

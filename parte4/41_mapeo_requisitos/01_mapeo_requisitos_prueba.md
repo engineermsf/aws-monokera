@@ -1,4 +1,4 @@
-# Mapeo: requisitos Parte 4 (prueba) vs implementación
+# Mapeo de requisitos Parte 4
 
 ---
 
