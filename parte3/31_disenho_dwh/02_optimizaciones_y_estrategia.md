@@ -43,10 +43,3 @@ En Athena sobre Iceberg no se definen índices secundarios como en un RDBMS. Las
 3. **Joins por clave surrogada:** `fact_article.news_source_id` → `dim_news_source.news_source_id` y `content_type` → `dim_topic.topic_id` son joins eficientes sobre columnas que el motor puede optimizar.
 
 Para cargas muy grandes, Iceberg permite compactación y gestión de archivos pequeños; el catálogo de Glue/Athena usa los metadatos de Iceberg para planificar lecturas.
-
----
-
-## Decisiones de diseño
-
-- **dim_topic como placeholder:** El modelo actual usa `content_type` (article, blog, report) como "tema". Una extensión futura (fase content con Comprehend o keywords) podría alimentar una `dim_topic` con temas reales y enlazarlos en `fact_article`.
-- **dim_news_source sin url ni reliability_score:** La API `/info` y la tabla Silver `info` exponen `news_site` y `version`. No se dispone de URL por sitio ni puntuación de fiabilidad en los datos de origen; el esquema se ajusta a lo disponible.
