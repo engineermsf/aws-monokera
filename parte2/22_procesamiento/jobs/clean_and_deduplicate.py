@@ -5,7 +5,8 @@ Lee la partición de Bronze por fecha de ingesta, deduplica por (content_type, i
 manteniendo la versión más reciente por updated_at, escribe en tablas Silver
 (articles, blogs, reports, info) con partición por fecha de negocio (published_at);
 info se particiona por fecha de ingesta.
-Uso: spark-submit clean_and_deduplicate.py --bronze_path <path> --silver_warehouse <path> --partition_date YYYY-MM-DD
+Uso: spark-submit clean_and_deduplicate.py --bronze_path <path> --silver_warehouse <path> --partition_date YYYY-MM-DD [--catalog_silver hadoop|glue].
+Con --catalog_silver glue las tablas se registran en Glue Data Catalog (carpeta silver/ en S3).
 """
 import argparse
 import logging
@@ -36,6 +37,12 @@ def parse_args():
     p.add_argument("--bronze_path", required=True, help="Ruta base Bronze (Parquet), ej. s3://bucket/bronze/spaceflight o file:///tmp/bronze")
     p.add_argument("--silver_warehouse", required=True, help="Warehouse Iceberg para Silver, ej. s3://bucket/silver o file:///tmp/silver_warehouse")
     p.add_argument("--partition_date", required=True, help="Fecha de partición de ingesta YYYY-MM-DD")
+    p.add_argument(
+        "--catalog_silver",
+        default="hadoop",
+        choices=("hadoop", "glue"),
+        help="Catálogo para Silver: hadoop (por defecto) o glue (Glue Data Catalog; Athena ve las tablas). Usar glue cuando el job corre en AWS.",
+    )
     # parse_known_args para ignorar argumentos que Glue inyecta (--JOB_ID, --JOB_RUN_ID, --JOB_NAME)
     return p.parse_known_args()[0]
 
@@ -87,9 +94,45 @@ def add_silver_partition_columns(df, use_published_at=True, run_year=None, run_m
     return df
 
 
-def ensure_silver_table_exists(spark, table_name, df_sample, partition_cols):
-    """Crea la tabla Iceberg si no existe (usando esquema del DF)."""
-    full_name = f"iceberg.{SILVER_DB}.{table_name}"
+def _ensure_glue_database_silver(silver_warehouse):
+    """Crea la base de datos 'silver' en Glue con LocationUri = warehouse/silver (sin .db).
+    Solo se usa cuando catalog_silver=glue."""
+    try:
+        import boto3
+        location = f"{silver_warehouse.rstrip('/')}/{SILVER_DB}"
+        client = boto3.client("glue", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        try:
+            client.get_database(Name=SILVER_DB)
+            logger.info("Base de datos Glue '%s' ya existe (location: %s)", SILVER_DB, location)
+        except client.exceptions.EntityNotFoundException:
+            client.create_database(
+                DatabaseInput={
+                    "Name": SILVER_DB,
+                    "Description": "Silver layer (Iceberg) - Spaceflight",
+                    "LocationUri": location,
+                }
+            )
+            logger.info("Base de datos Glue '%s' creada con LocationUri=%s", SILVER_DB, location)
+    except Exception as e:
+        logger.warning("No se pudo crear/verificar la base Glue '%s' (boto3): %s", SILVER_DB, e)
+
+
+def _register_silver_catalog(spark, silver_warehouse, catalog_silver="hadoop"):
+    """Registra el catálogo Silver: hadoop (iceberg por defecto) o glue (iceberg_silver con GlueCatalog)."""
+    if catalog_silver == "glue":
+        spark.conf.set("spark.sql.catalog.iceberg_silver", "org.apache.iceberg.spark.SparkCatalog")
+        spark.conf.set("spark.sql.catalog.iceberg_silver.warehouse", silver_warehouse)
+        spark.conf.set("spark.sql.catalog.iceberg_silver.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+        spark.conf.set("spark.sql.catalog.iceberg_silver.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        logger.info("Catálogo Silver: Glue Data Catalog (carpeta silver/ en S3)")
+        return "iceberg_silver"
+    # hadoop: get_spark_session ya configuró iceberg con warehouse
+    return "iceberg"
+
+
+def ensure_silver_table_exists(spark, table_name, df_sample, partition_cols, catalog_prefix):
+    """Crea la tabla Iceberg si no existe (usando esquema del DF). catalog_prefix ej. iceberg_silver.silver o iceberg.silver."""
+    full_name = f"{catalog_prefix}.{table_name}"
     try:
         spark.sql(f"DESCRIBE TABLE {full_name}")
         logger.info("Tabla %s ya existe", full_name)
@@ -98,9 +141,12 @@ def ensure_silver_table_exists(spark, table_name, df_sample, partition_cols):
         df_sample.limit(0).writeTo(full_name).using("iceberg").partitionedBy(*partition_cols).create()
 
 
-def write_silver_merge(spark, table_name, df, partition_cols, merge_on=None):
-    """Escribe en Silver: si la tabla existe hace MERGE; si no, crea. merge_on: columnas para ON (default: content_type, id)."""
-    full_name = f"iceberg.{SILVER_DB}.{table_name}"
+def write_silver_merge(spark, table_name, df, partition_cols, catalog_prefix, merge_on=None):
+    """Escribe en Silver: si la tabla existe hace MERGE; si no, crea. merge_on: columnas para ON (default: content_type, id).
+    Agrupa los datos por partición (repartition + sort) para cumplir con el ClusteredWriter de Iceberg."""
+    if all(c in df.columns for c in partition_cols):
+        df = df.repartition(*partition_cols).sortWithinPartitions(*partition_cols)
+    full_name = f"{catalog_prefix}.{table_name}"
     temp_view = f"_batch_{table_name}"
     df.createOrReplaceTempView(temp_view)
     try:
@@ -128,9 +174,15 @@ def write_silver_merge(spark, table_name, df, partition_cols, merge_on=None):
 def main():
     args = parse_args()
     year, month, day = parse_partition_date(args.partition_date)
+    catalog_silver = getattr(args, "catalog_silver", "hadoop")
 
     spark = get_spark_session(args.silver_warehouse)
     spark.sparkContext.setLogLevel("WARN")
+
+    catalog_name = _register_silver_catalog(spark, args.silver_warehouse, catalog_silver=catalog_silver)
+    catalog_prefix = f"{catalog_name}.{SILVER_DB}"
+    if catalog_silver == "glue":
+        _ensure_glue_database_silver(args.silver_warehouse)
 
     logger.info("Leyendo Bronze desde %s partición %s-%s-%s", args.bronze_path, year, month, day)
     bronze = read_bronze(spark, args.bronze_path, year, month, day)
@@ -151,7 +203,7 @@ def main():
         # Columnas de ingesta para poder filtrar por "día que se cargó" (ej. datos al 15)
         subset = subset.withColumn("ingestion_year", F.lit(year)).withColumn("ingestion_month", F.lit(month)).withColumn("ingestion_day", F.lit(day))
         table_name = f"{content_type}s"  # articles, blogs, reports
-        write_silver_merge(spark, table_name, subset, partition_cols)
+        write_silver_merge(spark, table_name, subset, partition_cols, catalog_prefix)
 
     # Info: leer solo content_type=info; en Silver explotar news_sites a un registro por sitio (version/demás se repiten)
     info_df = read_bronze_info_only(spark, args.bronze_path, year, month, day)
@@ -182,7 +234,7 @@ def main():
         # MERGE exige una sola fila por clave: deduplicar por (news_site, year, month, day)
         info_df = info_df.dropDuplicates(["news_site", "year", "month", "day"])
         write_silver_merge(
-            spark, INFO_TABLE, info_df, partition_cols,
+            spark, INFO_TABLE, info_df, partition_cols, catalog_prefix,
             merge_on=["news_site", "year", "month", "day"],
         )
 

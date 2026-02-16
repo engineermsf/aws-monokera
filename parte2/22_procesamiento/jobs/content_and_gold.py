@@ -5,14 +5,16 @@ Fases: dims (dim_news_source, dim_topic), facts (fact_article). Todas las tablas
 - dim_news_source: MERGE por news_site (preserva news_source_id existentes).
 - dim_topic: MERGE por topic_id.
 - fact_article: MERGE por (article_id, content_type). Sin --partition_date lee todo Silver y mergea.
-Uso: spark-submit content_and_gold.py --silver_warehouse <path> --gold_warehouse <path> [--phases dims,facts] [--partition_date YYYY-MM-DD]
+Uso: spark-submit content_and_gold.py --silver_warehouse <path> --gold_warehouse <path> [--phases dims,facts] [--partition_date YYYY-MM-DD] [--catalog_gold hadoop|glue]. Con --catalog_gold glue las tablas Gold se registran en Glue Data Catalog y Athena las ve sin crawler.
 """
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime
 
 from pyspark.sql import functions as F
+from pyspark.sql.types import LongType, StringType, StructField, StructType, TimestampType
 from pyspark.sql.window import Window
 
 _JOBS_DIR = __file__.rsplit("/", 1)[0] if "/" in __file__ else "."
@@ -40,7 +42,19 @@ def parse_args():
     p.add_argument(
         "--partition_date",
         default=None,
-        help="Fecha de negocio YYYY-MM-DD (partición Silver = published_at): lee solo esa partición y hace MERGE. Debe ser la fecha de corte del pipeline. Sin él, lee todo Silver y mergea.",
+        help="Opcional. Para uso futuro (ingesta incremental por último día desde la fuente). Sin él, merge completo: lee todo Silver y mergea en Gold.",
+    )
+    p.add_argument(
+        "--catalog_silver",
+        default="hadoop",
+        choices=("hadoop", "glue"),
+        help="Catálogo Silver (lectura): hadoop o glue. Usar glue cuando Silver está en Glue Data Catalog.",
+    )
+    p.add_argument(
+        "--catalog_gold",
+        default="hadoop",
+        choices=("hadoop", "glue"),
+        help="Catálogo para Gold: hadoop (metadata en S3, por defecto) o glue (Glue Data Catalog; Athena ve las tablas sin crawler). Usar glue cuando el job corre en AWS.",
     )
     # parse_known_args para ignorar argumentos que Glue inyecta (--JOB_ID, --JOB_RUN_ID, --JOB_NAME)
     return p.parse_known_args()[0]
@@ -52,14 +66,26 @@ def parse_partition_date(s):
     return dt.strftime("%Y"), dt.strftime("%m"), dt.strftime("%d")
 
 
-def register_gold_catalogs(spark, silver_warehouse, gold_warehouse):
-    """Registra catálogos iceberg_silver e iceberg_gold para leer Silver y escribir Gold."""
+def register_gold_catalogs(spark, silver_warehouse, gold_warehouse, catalog_silver="hadoop", catalog_gold="hadoop"):
+    """Registra catálogos iceberg_silver (hadoop o glue) e iceberg_gold (hadoop o glue).
+    En AWS Glue 4.0+ con Glue Data Catalog se usa catalog-impl (no type=glue)."""
     spark.conf.set("spark.sql.catalog.iceberg_silver", "org.apache.iceberg.spark.SparkCatalog")
-    spark.conf.set("spark.sql.catalog.iceberg_silver.type", "hadoop")
     spark.conf.set("spark.sql.catalog.iceberg_silver.warehouse", silver_warehouse)
+    if catalog_silver == "glue":
+        spark.conf.set("spark.sql.catalog.iceberg_silver.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+        spark.conf.set("spark.sql.catalog.iceberg_silver.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        logger.info("Catálogo Silver (lectura): Glue Data Catalog")
+    else:
+        spark.conf.set("spark.sql.catalog.iceberg_silver.type", "hadoop")
     spark.conf.set("spark.sql.catalog.iceberg_gold", "org.apache.iceberg.spark.SparkCatalog")
-    spark.conf.set("spark.sql.catalog.iceberg_gold.type", "hadoop")
     spark.conf.set("spark.sql.catalog.iceberg_gold.warehouse", gold_warehouse)
+    if catalog_gold == "glue":
+        spark.conf.set("spark.sql.catalog.iceberg_gold.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+        spark.conf.set("spark.sql.catalog.iceberg_gold.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+        logger.info("Catálogo Gold: Glue Data Catalog (catalog-impl=GlueCatalog; Athena verá las tablas)")
+    else:
+        spark.conf.set("spark.sql.catalog.iceberg_gold.type", "hadoop")
+        logger.info("Catálogo Gold: Hadoop (metadata en S3)")
 
 
 def run_phase_dims(spark):
@@ -139,9 +165,25 @@ def _build_facts_from_union(spark, union_df):
     return facts.withColumnRenamed("id", "article_id")
 
 
+def _empty_fact_article_schema():
+    """Esquema de fact_article para crear la tabla vacía si no hay datos en Silver para la partición."""
+    return StructType([
+        StructField("article_id", LongType(), True),
+        StructField("content_type", StringType(), True),
+        StructField("news_source_id", LongType(), True),
+        StructField("title", StringType(), True),
+        StructField("published_at", TimestampType(), True),
+        StructField("updated_at", TimestampType(), True),
+        StructField("year", StringType(), True),
+        StructField("month", StringType(), True),
+        StructField("day", StringType(), True),
+    ])
+
+
 def run_phase_facts(spark, partition_date=None):
     """Construye fact_article desde silver.articles, blogs, reports; join a dim_news_source.
-    Siempre escribe por MERGE (nunca DROP+CREATE). Con partition_date lee solo esa partición; sin él, lee todo Silver y mergea."""
+    Siempre escribe por MERGE por (article_id, content_type). Con partition_date lee solo esa partición de Silver; sin él, lee todo.
+    Si no hay datos para esa partición, igual se asegura que la tabla fact_article exista en Gold (para que aparezca en Glue/Athena)."""
     if partition_date:
         year, month, day = parse_partition_date(partition_date)
         logger.info("Fase facts: fact_article MERGE incremental (partición %s-%s-%s)", year, month, day)
@@ -150,18 +192,53 @@ def run_phase_facts(spark, partition_date=None):
         logger.info("Fase facts: fact_article MERGE (lectura completa de Silver)")
         union_df = _read_silver_content(spark, None, None, None)
     if union_df.isEmpty():
-        logger.warning("No hay datos en Silver para procesar; nada que mergear")
+        logger.warning(
+            "No hay datos en Silver para esta partición; se crea/asegura la tabla fact_article vacía para que exista en Glue/Athena"
+        )
+        empty_schema = _empty_fact_article_schema()
+        empty_facts = spark.createDataFrame([], empty_schema)
+        _ensure_fact_article_exists(spark, empty_facts)
         return
     facts = _build_facts_from_union(spark, union_df)
+    facts = facts.repartition(4)
     _ensure_fact_article_exists(spark, facts)
     _write_fact_article_merge(spark, facts)
 
 
-def _ensure_gold_database(spark):
+def _ensure_glue_database_gold(gold_warehouse):
+    """Crea la base de datos 'gold' en Glue con LocationUri = warehouse/gold (sin .db).
+    Así en S3 aparece la carpeta gold/ en lugar de gold.db/. Solo se usa cuando catalog_gold=glue."""
+    try:
+        import boto3
+        location = f"{gold_warehouse.rstrip('/')}/{GOLD_DB}"
+        client = boto3.client("glue", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        try:
+            client.get_database(Name=GOLD_DB)
+            logger.info("Base de datos Glue '%s' ya existe (location: %s)", GOLD_DB, location)
+        except client.exceptions.EntityNotFoundException:
+            client.create_database(
+                DatabaseInput={
+                    "Name": GOLD_DB,
+                    "Description": "Gold layer (Iceberg) - Spaceflight",
+                    "LocationUri": location,
+                }
+            )
+            logger.info("Base de datos Glue '%s' creada con LocationUri=%s", GOLD_DB, location)
+    except Exception as e:
+        logger.warning("No se pudo crear/verificar la base Glue '%s' (boto3): %s", GOLD_DB, e)
+
+
+def _ensure_gold_database(spark, gold_warehouse=None, catalog_gold="hadoop"):
+    """Crea la base de datos/namespace Gold en el catálogo (Glue o Hadoop) si no existe.
+    Con catalog_gold=glue, creamos la base en Glue con LocationUri = warehouse/gold (carpeta gold/, no gold.db/)."""
+    if catalog_gold == "glue" and gold_warehouse:
+        _ensure_glue_database_gold(gold_warehouse)
+        return
     try:
         spark.sql(f"CREATE NAMESPACE IF NOT EXISTS iceberg_gold.{GOLD_DB}")
+        logger.info("Namespace iceberg_gold.%s verificado/creado", GOLD_DB)
     except Exception as e:
-        logger.debug("Namespace gold (o ya existe): %s", e)
+        logger.warning("No se pudo crear el namespace iceberg_gold.%s: %s", GOLD_DB, e)
 
 
 def _build_dim_news_source_batch(spark, new_sites):
@@ -274,15 +351,24 @@ def main():
     # Usar gold_warehouse como warehouse por defecto para crear sesión; luego registramos ambos catálogos
     spark = get_spark_session(args.gold_warehouse)
     spark.sparkContext.setLogLevel("WARN")
-    register_gold_catalogs(spark, args.silver_warehouse, args.gold_warehouse)
+    register_gold_catalogs(
+        spark,
+        args.silver_warehouse,
+        args.gold_warehouse,
+        catalog_silver=getattr(args, "catalog_silver", "hadoop"),
+        catalog_gold=getattr(args, "catalog_gold", "hadoop"),
+    )
 
-    _ensure_gold_database(spark)
+    catalog_gold = getattr(args, "catalog_gold", "hadoop")
+    _ensure_gold_database(spark, gold_warehouse=args.gold_warehouse, catalog_gold=catalog_gold)
+    # Con Glue Data Catalog siempre hacemos full merge (leer todo Silver); si el job tiene --partition_date por defecto, lo ignoramos.
+    partition_for_facts = None if catalog_gold == "glue" else args.partition_date
     if "dims" in phases:
         run_phase_dims(spark)
     if "facts" in phases:
-        run_phase_facts(spark, partition_date=args.partition_date)
+        run_phase_facts(spark, partition_date=partition_for_facts)
 
-    logger.info("Job content_and_gold finalizado (fases: %s)%s", phases, " incremental" if args.partition_date else "")
+    logger.info("Job content_and_gold finalizado (fases: %s)%s", phases, " incremental" if partition_for_facts else " (full merge)")
     return 0
 
 
